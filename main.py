@@ -7,6 +7,7 @@ import os
 import logging
 import sys
 import urllib.parse
+import re
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,7 +21,20 @@ logging.basicConfig(
 dotenv.load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  # Make sure to set this in your .env file
 
-def get_route(origin: str, destination: str, waypoints: list[str] = None) -> list[tuple]:
+def extract_fallback_coords_from_url(url: str) -> list[tuple]:
+    """Extract exact coordinates from the Google Maps URL data parameter as a last resort."""
+    clean_url = url.replace('\\!', '!').replace('\\=', '=')
+    matches = re.findall(r'!1d([-\d.]+)!2d([-\d.]+)', clean_url)
+    coords = []
+    for m in matches:
+        try:
+            lng, lat = float(m[0]), float(m[1])
+            coords.append((lat, lng))
+        except ValueError:
+            pass
+    return coords
+
+def get_route(origin: str, destination: str, waypoints: list[str] = None, original_url: str = None) -> list[tuple]:
     """Fetch route from Google Routes API and return decoded coordinates."""
     if waypoints is None:
         waypoints = []
@@ -81,7 +95,21 @@ def get_route(origin: str, destination: str, waypoints: list[str] = None) -> lis
             r.raise_for_status()
             data = r.json()
 
+            # If BICYCLE also fails (e.g., restricted usage, private roads, or borders), fallback to WALK.
+            if "routes" not in data or not data["routes"]:
+                logging.info("BICYCLE mode failed. Retrying with WALK to bypass extreme restrictions...")
+                payload["travelMode"] = "WALK"
+                r = httpx.post(url, headers=headers, json=payload)
+                r.raise_for_status()
+                data = r.json()
+
     if "routes" not in data or not data["routes"]:
+        if original_url:
+            logging.info("All API modes failed. Falling back to extracting direct coordinates from URL...")
+            fallback_coords = extract_fallback_coords_from_url(original_url)
+            if fallback_coords:
+                logging.warning("API routing refused (likely due to seasonal closures or private roads). Proceeding with straight-line fallback using URL coordinates.")
+                return fallback_coords
         raise ValueError(f"API error or no routes found: {data}")
 
     # Decode the overview polyline (full route)
@@ -158,6 +186,7 @@ if __name__ == "__main__":
             origin=origin,
             destination=destination,
             waypoints=waypoints,
+            original_url=url,
         )
         coords_to_gpx(coords, "route.gpx")
     except Exception as e:
