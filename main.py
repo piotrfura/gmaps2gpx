@@ -64,6 +64,23 @@ def get_route(origin: str, destination: str, waypoints: list[str] = None) -> lis
     r.raise_for_status()
     data = r.json()
 
+    # If driving route fails (often due to seasonally closed roads like alpine passes), try TWO_WHEELER
+    if "routes" not in data or not data["routes"]:
+        logging.info("DRIVE mode returned no routes (possibly due to seasonal closures). Retrying with TWO_WHEELER...")
+        payload["travelMode"] = "TWO_WHEELER"
+        r = httpx.post(url, headers=headers, json=payload)
+        r.raise_for_status()
+        data = r.json()
+        
+        # If TWO_WHEELER fails or is unsupported in the region, fallback to BICYCLE to bypass the closure.
+        # Bicycles share the same paved roads on mountain passes, so the route coordinates will be accurate.
+        if "routes" not in data or not data["routes"]:
+            logging.info("TWO_WHEELER mode failed or is unsupported. Retrying with BICYCLE...")
+            payload["travelMode"] = "BICYCLE"
+            r = httpx.post(url, headers=headers, json=payload)
+            r.raise_for_status()
+            data = r.json()
+
     if "routes" not in data or not data["routes"]:
         raise ValueError(f"API error or no routes found: {data}")
 
